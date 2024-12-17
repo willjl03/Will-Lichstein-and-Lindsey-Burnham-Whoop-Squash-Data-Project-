@@ -1,4 +1,6 @@
 Lindsey and I's final project uses Whoop data from squash players to look at the relationship 
-between workout statistics and strain, sleep statistics and sleep, and recovery. We use a few 
-statistical models to look at this. The code is easily accessible in the file 'Final Project Writeup.rmd' 
-and the HTML version is easily readable in the 'Final Project Writeup.html' file.
+between strain (a Whoop variable built on workout statistics) and sleep performance (a Whoop variable
+built on sleep statistics) on recovery score (a variable make by Whopp built on strain and sleep). 
+We use a few statistical models to look at this. The code is easily accessible in the file 
+'Final Project Writeup.rmd' and the HTML version is easily readable in the 'Final Project Writeup.html' file.
+We'd recommened looking at the HTML first then the RMD after. Enjoy!
