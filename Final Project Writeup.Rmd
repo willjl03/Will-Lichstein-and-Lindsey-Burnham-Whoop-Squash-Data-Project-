@@ -1,0 +1,1098 @@
+---
+title: "Investigating Squash Athletes' Recovery with WHOOP Data"
+author: "Lindsey Burnham & Will Lichstein"
+output:
+  html_document:
+    code_folding: hide
+---
+```{r, results='hide', message=FALSE, warning=FALSE}
+library(tidyverse)
+library(caret)
+library(lubridate)
+library(dplyr)
+library(randomForest)
+library(xgboost)
+library(shapviz)
+library(gam)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+  Our final project aims to investigate the relationship between squash workouts and sleep/recovery. We are both college squash players and are interested in digging into the statistics of our (and our peer's) daily workouts and recoveries. WHOOP is a wearable fitness tracker that allows people to visualize statistics about their day to day activity. From features like activity strain, recovery, total sleep, and heart rate variability, WHOOP provides people with comprehensive data on their overall health and fitness level. WHOOP allows people to see their data in a interactive mobile app, as well as in CSV format. We both have WHOOPs, thus making it very easy to see our own statistics for these categories; however, while we can see our own workouts, sleep, and recovery, it is much harder to look at just the squash workouts. This was the very root of our question--to investigate just how squash workouts impact sleep and recovery. To collect more data, we sent a survey to all college squash teams asking for their players' data. We also sent a survey to fellow squash peers and coaches who play regularly and at a competitive level. We collected 8 male and 5 female squash players' WHOOP data, leaving us with ~789 days worth of data. 
+  The data is broken into two categories. The first is statistics for the workout. This includes things like the total overall effort (strain, as WHOOP puts it), total calories burned, and many heart rate statistics. 
+  The next is sleep/recovery (physiological cycles). WHOOP tracks many sleep statistics such as sleeps cycles, heart rate variability, and total time asleep. Lastly, based on the prior day's strain and sleep, WHOOP gives a recovery score. While recovery is its own statistic, it is not really its own category as there is just one recovery metric (score) compared to the many given for workouts and sleep.
+  So, using this WHOOP data, we use statistical learning models to investigate the relationship between squash workouts, sleep, and recovery.
+  
+  Getting into why we believe statistical learning models will be helpful to answer this question, there is one main reason: how well one recovers is a very nuanced question. It is not as simple as just the total time you sleep and how hard you workout. By using statistical models like Random Forests, Generalized Additive Models (GAM), and boosting, we can clearly see how different variable are more important than others and uncover how the hidden/less expected variables (such as skin temperature, the time of day a workout occurred, and blood oxygen) have a great impact on workouts, sleep, and recovery. 
+  
+  We use three models: Random Forest, GAM with splines, and boosted tree models. Random Forests are a statistical learning model that can use many decision trees to make predictions on what your recovery score will be based on your workout variables such as maximum heart rate and workout start time. A decision tree can make predictions by splitting the data based on the variables. For example, the decision tree might first split the data on if your maximum heart rate was above 180bpm. It will then make more and more splits based on the variables, with more "important" variables having more of an impact on the overall prediction. Random Forests are unique in that they use a method called "bootstrapping" to split the data into many random subsets that can then make decision trees. Random Forests combine the results of these trees to provide a final prediction that is more robust and accurate than using only one decision tree. This model works well with non-linear and complex relationships, which those of strain, recovery, and sleep, all are. It also works well with large data sets, like ours! 
+  
+  We also use a statistical learning technique that we did not learn in our class called GAM with splines. GAM is a learning technique that assesses each variable's effect independently and then sums them to predict the outcome. For this project, this means that GAM assesses the effect of average heart rate on recovery score and the effect of maximum heart rate on recovery score independently of each other. GAM captures how each variable could have separate influences on recovery score. It then sums up each variable's unique influence on the recovery score to make a prediction. Splines improves GAM by addressing the fact that relationships between variables and the outcome may not be linear. Average heart right might have a different relationship with recovery scores at 1-10 than at 90-100. Smoothing splines introduce knots - points where the relationship can change — allowing the model to capture more complex patterns in the data rather than using only one polynomial function. Smoothing splines do essentially what their names says: they smooth the function with a smoothing parameter. The smoothing parameter ensures the function is neither too flexible (overfitting) nor too rigid (underfitting), improving model performance. Using GAM with splines lets each variable have a non-linear relationship with recovery score, allowing us to capture more complex, important patterns than a simple linear model would. The animation below visualizes GAM with splines' additive nature.
+  
+![animation created by https://ecogambler.netlify.app/blog/interpreting-gams/](/Users/lindseyburnham/Desktop/basis_weights.gif)
+
+  GAM with splines works well with our data because it can work with large and nonlinear datasets. You can find out complex relationships within the data using this model without having to what types of linear or nonlinear relationships exist in the data before modeling.
+
+Boosted trees are another model we use. They are a good way to predict recovery scores using workout data, as they can identify complex, non-linear relationships between variables like average heart rate and workout duration. This model focuses on poorly predicted recovery scores and then refines the model to make these predictions better. In doing this, boosted trees can capture subtle effects of these variables, such as how sustained elevated heart rates or workout length impact recovery. This approach is particularly useful for our data because it handles variable interactions effectively and can adapt to the unique recovery patterns of individual athletes.
+
+  With boosted trees, we can also visualize variable importance using SHAP values and a beeswarm graph. With a beeswarm graph, we can see specifically how each variable contributes to the overall prediction. SHAP (SHapley Additive exPlanations) values can quantify the contribution of each feature to a model's prediction for a given instance. Each SHAP value indicates how a variable contributed to the difference between the baseline prediction (the average recovery score) and the predicted score. So, bigger SHAP values indicate that variable might have more importance. Feature importance helps enhance the SHAP value graph. The larger the number is, the more feature importance it will have. So, if a greater average heart rate has a bigger negative SHAP value, this means that it is decreasing the baseline prediction.
+
+  It is important to note that each variable is better at certain things than others, and we use each model differently. Random Forests and GAM with splines are good for seeing how important certain variables are in the levels of an outcome variable and make it easy to see how much of our outcome variable is explained by the tested input variables, so we use these models to see how much strain statistics impact sleep and recovery, respectively, and how much sleep statistics impact recovery.
+  
+  Boosted tree models are good to use to interpret those results visually through beeswarm graphs, so that's what we do; we look at the same relationships and see directly how much those input variables impact the outcome variable.
+
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+#Loading in the data and creating a clean dataset for male players
+# Read the CSV files
+M1 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project men/physiological_cycles_M1.csv")
+M2 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project men/physiological_cycles_M2.csv")
+M3 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project men/physiological_cycles_M3.csv")
+M4 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project men/physiological_cycles_M4.csv")
+M5 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project men/physiological_cycles_M5.csv")
+M6 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project men/physiological_cycles_M6.csv")
+M7 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project men/physiological_cycles_M7.csv")
+M8 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project men/physiological_cycles_M8.csv")
+M9 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project men/physiological_cycles_M9.csv")
+
+# Combine the data frames and add an ID column
+Phys_M <- bind_rows(
+  M1 %>% mutate(Source = 1),
+  M2 %>% mutate(Source = 2),
+  M3 %>% mutate(Source = 3),
+  M4 %>% mutate(Source = 4),
+  M5 %>% mutate(Source = 5),
+  M6 %>% mutate(Source = 6),
+  M7 %>% mutate(Source = 7),
+  M8 %>% mutate(Source = 8),
+  M9 %>% mutate(Source = 9))|>
+  dplyr::select(-Cycle.start.time, -Cycle.end.time, -Cycle.timezone)
+
+Phys_M <- Phys_M  |>
+  mutate(Start_time_sleep = as_datetime(Sleep.onset)|>
+          hour(),
+        End_time_sleep = as_datetime(Wake.onset)|>
+          hour(),
+        date = as.Date(Sleep.onset))
+
+dates <- seq(from = as.Date("2019-5-06"), to = as.Date("2024-12-5"), by = 1)
+
+my_data <- expand.grid(date = dates, Source = 1:9) 
+
+my_data_phys <- my_data|>
+  left_join(Phys_M, by = c("date", "Source")) 
+
+#workouts
+WM1 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project men/workouts_M1.csv")
+WM2 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project men/workouts_M2.csv")
+WM3 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project men/workouts_M3.csv")
+WM4 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project men/workouts_M4.csv")
+WM5 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project men/workouts_M5.csv")
+WM6 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project men/workouts_M6.csv")
+WM7 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project men/workouts_M7.csv")
+WM8 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project men/workouts_M8.csv")
+WM9<- read.csv("/Users/lindseyburnham/Desktop/Whoop project men/workouts_M9.csv")
+
+Workout_M <- bind_rows(
+  WM1 %>% mutate(Source = 1),
+  WM2 %>% mutate(Source = 2),
+  WM3 %>% mutate(Source = 3),
+  WM4 %>% mutate(Source = 4),
+  WM5 %>% mutate(Source = 5),
+  WM6 %>% mutate(Source = 6),
+  WM7 %>% mutate(Source = 7),
+  WM8 %>% mutate(Source = 8),
+  WM9 %>% mutate(Source = 9))|>
+  dplyr::select(-GPS.enabled, -Distance..meters., -Altitude.gain..meters.)|>
+  dplyr::select(-Altitude.change..meters.) 
+
+Workout_M<- Workout_M  |>
+  mutate(
+    Start_time_workout = as_datetime(Workout.start.time)|>
+      hour(),
+    End_time_workout = as_datetime(Workout.end.time)|>
+      hour(),
+    date = as.Date(Workout.start.time)) |>
+  dplyr::select(-Cycle.start.time, -Cycle.end.time, -Cycle.timezone)
+
+
+dates <- seq(from = as.Date("2019-5-06"), to = as.Date("2024-12-5"), by = 1)
+
+my_data <- expand.grid(date = dates, Source = 1:9) 
+
+my_data_2 <- my_data|>
+left_join(Workout_M, by = c("date", "Source")) 
+
+# combine everything:
+
+full_data_M <- my_data_2 |>
+  left_join(my_data_phys, by= c("date", "Source")) |>
+  dplyr::select(-Workout.start.time, -Workout.end.time, -Wake.onset, -Sleep.onset) |>
+  dplyr::filter(Activity.name == "Squash") |>
+  mutate(Source = as.factor(Source)) %>%
+  na.omit()
+
+colnames(full_data_M)[3] <- c("Duration")
+colnames(full_data_M)[6] <- c("Calories_Burned_Workout")
+colnames(full_data_M)[7] <- c("Max_HR_Workout")
+colnames(full_data_M)[8] <- c("Avg_HR_Workout")
+colnames(full_data_M)[9] <- c("HR_Zone_1")
+colnames(full_data_M)[10] <- c("HR_Zone_2")
+colnames(full_data_M)[11] <- c("HR_Zone_3")
+colnames(full_data_M)[12] <- c("HR_Zone_4")
+colnames(full_data_M)[13] <- c("HR_Zone_5")
+colnames(full_data_M)[16] <- c("Recovery_Score")
+colnames(full_data_M)[25] <- c("Sleep_Performance")
+
+```
+
+
+```{r}
+#Loading in the data and creating a clean dataset for female players
+# Read the CSV files
+W1 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project women/physiological_cycles_W_1.csv")
+W2 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project women/physiological_cycles_W_2.csv")
+W3 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project women/physiological_cycles_W_3.csv")
+W4 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project women/physiological_cycles._W_4csv.csv")
+W5 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project women/physiological_cycles_W_5.csv")
+W6 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project women/physiological_cycles_W_6.csv")
+# Combine the data frames and add an ID column
+Phys_W <- bind_rows(
+  W1 %>% mutate(Source = 1),
+  W2 %>% mutate(Source = 2),
+  W3 %>% mutate(Source = 3),
+  W4 %>% mutate(Source = 4),
+  W5 %>% mutate(Source = 5),
+  W6 %>% mutate(Source = 6)) |>
+  dplyr::select(-Cycle.start.time, -Cycle.end.time, -Cycle.timezone)
+
+Phys_W <- Phys_W  |>
+  mutate(Start_time_sleep = as_datetime(Sleep.onset)|>
+          hour(),
+        End_time_sleep = as_datetime(Wake.onset)|>
+          hour(),
+        date = as.Date(Sleep.onset))
+
+dates <- seq(from = as.Date("2019-10-04"), to = as.Date("2024-12-5"), by = 1)
+
+my_data_W <- expand.grid(date = dates, Source = 1:6) 
+
+my_data_physW <- my_data_W|>
+  left_join(Phys_W, by = c("date", "Source")) 
+
+#workouts
+WW1 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project women/workouts_W_1.csv")
+WW2 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project women/workouts_W_2.csv")
+WW3 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project women/workouts_W_3.csv")
+WW4 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project women/workouts_W_4.csv")
+WW5 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project women/workouts_W_5.csv")
+WW6 <- read.csv("/Users/lindseyburnham/Desktop/Whoop project women/workouts_W_6.csv")
+
+Workout_W <- bind_rows(
+  WW1 %>% mutate(Source = 1),
+  WW2 %>% mutate(Source = 2),
+  WW3 %>% mutate(Source = 3),
+  WW4 %>% mutate(Source = 4),
+  WW5 %>% mutate(Source = 5),
+  WW6 %>% mutate(Source = 6)) |>
+  dplyr::select(-GPS.enabled, -Distance..meters., -Altitude.gain..meters.)|>
+  dplyr::select(-Altitude.change..meters.) 
+
+Workout_W<- Workout_W  |>
+  mutate(
+    Start_time_workout = as_datetime(Workout.start.time)|>
+      hour(),
+    End_time_workout = as_datetime(Workout.end.time)|>
+      hour(),
+    date = as.Date(Workout.start.time)) |>
+  dplyr::select(-Cycle.start.time, -Cycle.end.time, -Cycle.timezone)
+
+my_data_2W <- my_data_W|>
+left_join(Workout_W, by = c("date", "Source")) 
+
+# combine everything:
+
+full_data_W <- my_data_2W|>
+  left_join(my_data_phys, by= c("date", "Source")) |>
+  dplyr::select(-Workout.start.time, -Workout.end.time, -Wake.onset, -Sleep.onset) |>
+  dplyr::filter(Activity.name == "Squash") |>
+  mutate(Source = as.factor(Source)) %>%
+  na.omit()
+
+colnames(full_data_W)[3] <- c("Duration")
+colnames(full_data_W)[6] <- c("Calories_Burned_Workout")
+colnames(full_data_W)[7] <- c("Max_HR_Workout")
+colnames(full_data_W)[8] <- c("Avg_HR_Workout")
+colnames(full_data_W)[9] <- c("HR_Zone_1")
+colnames(full_data_W)[10] <- c("HR_Zone_2")
+colnames(full_data_W)[11] <- c("HR_Zone_3")
+colnames(full_data_W)[12] <- c("HR_Zone_4")
+colnames(full_data_W)[13] <- c("HR_Zone_5")
+colnames(full_data_W)[16] <- c("Recovery_Score")
+colnames(full_data_W)[25] <- c("Sleep_Performance")
+
+```
+```{r}
+full_data_M |>
+  ggplot() +
+  geom_point(aes(x = Sleep_Performance, y=Activity.Strain)) +
+    geom_smooth(aes(x = Sleep_Performance, y = Activity.Strain), 
+              method = "lm", se = FALSE, color = "red") +
+  labs(
+    title = "Male Players' Sleep Performance vs Total Strain",
+    x = "Sleep Performance",
+    y = "Activity Strain"
+  ) +
+  theme_minimal()
+
+           
+full_data_M |>
+  ggplot() +
+  geom_point(aes(x = Recovery_Score, y=Activity.Strain)) +
+  geom_smooth(aes(x = Recovery_Score, y = Activity.Strain), 
+              method = "lm", se = FALSE, color = "red") +
+    labs(title = "Male Players' Recovery Score vs Total Strain",
+    x = "Recovery Score",
+    y = "Activity Strain") +
+  theme_minimal()
+       
+
+full_data_M |>
+  ggplot() +
+  geom_point(aes(x = Sleep_Performance, y= Recovery_Score)) +
+  geom_smooth(aes(x = Sleep_Performance, y = Recovery_Score), 
+              method = "lm", se = FALSE, color = "red") +
+    labs(title = "Male Players' Sleep Performance vs Recovery Score",
+    x = "Sleep Performance",
+    y = "Recovery Score") +
+  theme_minimal()
+
+
+full_data_W |>
+  ggplot() +
+  geom_point(aes(x = Sleep_Performance, y=Activity.Strain)) +
+    geom_smooth(aes(x = Sleep_Performance, y = Activity.Strain), 
+              method = "lm", se = FALSE, color = "red") +
+  labs(
+    title = "Female Players' Sleep Performance vs Total Strain",
+    x = "Sleep Performance",
+    y = "Activity Strain"
+  ) +
+  theme_minimal()
+
+           
+full_data_W |>
+  ggplot() +
+  geom_point(aes(x = Recovery_Score, y=Activity.Strain)) +
+  geom_smooth(aes(x = Recovery_Score, y = Activity.Strain), 
+              method = "lm", se = FALSE, color = "red") +
+    labs(title = "Female Players' Recovery Score vs Total Strain",
+    x = "Recovery Score",
+    y = "Activity Strain") +
+  theme_minimal()
+       
+
+full_data_W |>
+  ggplot() +
+  geom_point(aes(x = Sleep_Performance, y= Recovery_Score)) +
+  geom_smooth(aes(x = Sleep_Performance, y = Recovery_Score), 
+              method = "lm", se = FALSE, color = "red") +
+    labs(title = "Female Players' Sleep Performance vs Recovery Score",
+    x = "Sleep Performance",
+    y = "Recovery Score") +
+  theme_minimal()
+```
+
+ 
+  We split the data by sex because of the physiological differences including hormonal and body composition differences which, we think, could lead to variance in responses to exercise. In comparing each individually, we can hopefully find common variables that tell us how squash workouts impact sleep and recovery. 
+  
+  To visualize the WHOOP data, we wanted to first visualize any apparent relationships between three variables: activity strain for a squash workout, sleep performance, and recovery score. We found that, for both men and women, the most clear relationship was between sleep performance and recovery score. This makes sense because WHOOP primarily uses sleep data to calculate your recovery score. There was a less evident, but slight relationship between your strain and sleep performance and practically no relationship between your strain and recovery score. These graphs can give us insight into how our models might perform. We expect, given the lack of a clear relationship between strain and sleep performance and recovery score, that our models will not perform that well. This does not mean we can't extract meaningful results, as there might be hidden workout variables that have an impact on sleep performance and recovery.
+  
+Now that we have the data cleaned and ready to review, we can make and analyze our first models which will examine how all of the workout statistics impact recovery and what variables within the workout are the most important. 
+
+  
+```{r}
+#Let's first do a random forest model for the male squash data 
+strain_recovery_data_M <- full_data_M %>%
+  dplyr::select(Source,
+                Duration, 
+                Activity.Strain,
+                Calories_Burned_Workout,
+                Max_HR_Workout,
+                Avg_HR_Workout,
+                HR_Zone_1,
+                HR_Zone_2,
+                HR_Zone_3,
+                HR_Zone_4,
+                HR_Zone_5,
+                Start_time_workout,
+                End_time_workout,
+                Recovery_Score)
+set.seed(1)
+rf_squash_M <- train(Recovery_Score ~.,
+                    data = strain_recovery_data_M,
+                    method = "ranger",
+                    importance = "impurity",
+                  trControl = trainControl(method = "cv", number = 5),
+                     tuneGrid = expand.grid(mtry = c(1,2), 
+                              splitrule = c("variance", "extratrees"), 
+                              min.node.size = c(1, 2, 3)))
+
+set.seed(1)
+gs_squash_M <- train(Recovery_Score ~.,
+                    data = strain_recovery_data_M,
+                    method = "gamSpline",
+                    importance = "impurity",
+                  trControl = trainControl(method = "cv", number = 5),
+                   tuneGrid = expand.grid(df = c(1, 2, 3, 4, 5)))
+
+```
+Random Forest results and top ten variables with their importance for Male Squash Player data
+```{r}
+print(rf_squash_M)
+rf1M <- varImp(rf_squash_M) 
+impM<- as.data.frame(rf1M$importance) |>
+  arrange(-Overall) |>
+  head(10)
+print(impM)
+```
+
+GAM with splines results and top ten variables with their importance for Male Squash Player data
+```{r}
+print(gs_squash_M)
+
+gs1M <- varImp(gs_squash_M) 
+gsimpM<- as.data.frame(gs1M$importance) |>
+  arrange(-Overall) |>
+  head(10)
+print(gsimpM)
+```
+
+```{r}
+#Let's now do a random forest model for the female squash data 
+strain_recovery_data_W <- full_data_W %>%
+  dplyr::select(Source,
+                Duration, 
+                Activity.Strain,
+                Calories_Burned_Workout,
+                Max_HR_Workout,
+                Avg_HR_Workout,
+                HR_Zone_1,
+                HR_Zone_2,
+                HR_Zone_3,
+                HR_Zone_4,
+                HR_Zone_5,
+                Start_time_workout,
+                End_time_workout,
+                Recovery_Score) 
+
+set.seed(1)
+rf_squash_W <- train(Recovery_Score ~.,
+                    data = strain_recovery_data_W,
+                    method = "ranger",
+                    importance = "impurity",
+                  trControl = trainControl(method = "cv", number = 5),
+                     tuneGrid = expand.grid(mtry = c(1,2), 
+                              splitrule = c("variance", "extratrees"), 
+                              min.node.size = c(1, 2, 3)))
+
+set.seed(1)
+gs_squash_W <- train(Recovery_Score ~.,
+                    data = strain_recovery_data_W,
+                    method = "gamSpline",
+                    importance = "impurity",
+                  trControl = trainControl(method = "cv", number = 5),
+                   tuneGrid = expand.grid(df = c(1, 2, 3, 4, 5)))
+
+```
+
+
+Random Forest results and top ten variables with their importance for Female Squash Player data
+```{r}
+print(rf_squash_W)
+rf1W <- varImp(rf_squash_W) 
+impW<- as.data.frame(rf1W$importance) |>
+  arrange(-Overall) |>
+  head(10)
+print(impW)
+```
+
+
+GAM with splines results and top ten variables with their importance for Female Squash Player data
+```{r}
+print(gs_squash_W)
+gs1W <- varImp(gs_squash_W) 
+gsimpW<- as.data.frame(gs1W$importance) |>
+  arrange(-Overall) |>
+  head(10)
+print(gsimpW)
+```
+
+  The first models are looking at how workout strain and intensity impact the recovery score. There are two important things to define: RMSE and Rsquared (R^2). The RMSE is the error range, or how far off our models predictions will be; an RMSE of 18.9 means that the model has an error range of 18.9 recovery points (the lower the better). R^2 is the percentage of the variable in question (in this case recovery score) that can be explained by the data (in this case workout statistics); in this case, only 13.5% of the recovery score can be explained by the workout data for the male squash players.
+  
+  For the female squash players, this model did not perform as well. The main reason for this is the difference in the sizes of the data sets. The men had about 3 times as much data as the women, so that model will perform better because it has more data to train from and there is more potential for the model to pick up underlying patterns that might not be seen with less data. While the R^2 for the model of the female squash players is 2.9%, the RMSE is 20.1, which is similar to that of the model for the male squash players.
+  
+  The GAM with splines performed similarly for both models and was only slightly worse for both. Both Random Forests and GAM with splines have pros and cons. For example, random forests don't adapt to try to make bad predictions better like boosted trees do. In addition, GAM with splines is purely additive, so interactions between variables aren't captured well. For future models, we will choose between Random Forests and GAM with splines, picking the model that does better and analyzing that one.
+  
+  More or less, both the Random Forests and GAM with splines put similar importance on the same variables. The big exception was the the GAM with splines for men put a lot more importance on the sources, and a lot less importance on the other variables compared to the Random Forest. The variable importance is also interesting: things like average HR and the time in the day which the workout started/ended are more important for recovery than the calories burned and strain for men. For women, activity strain was the most important variable, as well as your percent of time in your low to moderate effort heart rate zones, and calories burned. However, since the model for the women did not perform as well, these variables can't have too much weight in analysis, because while they were important for this model, this model predicted barely better than random guessing. Overall, things like time of day and low heart rate zones seemed to matter more for both men and women, variables one might not take into consideration when planning their squash workout. This leads us to the conclusion that maybe the intensity of a workout isn't the most important thing for recovery.
+
+  Given the high RMSE and low R^2, this seems like not the best model, but we believe there is a catch: much of what makes up the recovery score is based on factors other than strain and workout statistics (like sleep), so maybe the workout data is actually explaining the recovery score to the best of its ability. One thing to note is how our data is stored by WHOOP: each row is a workout, not a day. Also, the recovery score on a given day is actually based on the strain and sleep from the prior day. Because of this, we could only apply this to data with two consecutive days, which caused us to lose at least half of our data; this was a problem. So, the calculation of the recovery score by WHOOP and the loss of data most likely heavily contributed to the poor performance of both models.
+  
+  
+Boosted model mean difference between recovery score and prediction for Male Squash Player data
+
+```{r}
+imputed_subset<- strain_recovery_data_M |>
+  dplyr::select(-Recovery_Score)
+set.seed(1)
+training_rows <- sample(1:nrow(imputed_subset),
+                        size = nrow(imputed_subset)/2)
+train_data<- imputed_subset[training_rows, ]
+test_data<- imputed_subset[-training_rows, ]
+
+set.seed(1)
+split_rows <- sample(1:nrow(strain_recovery_data_M),
+                        size = nrow(strain_recovery_data_M)/2)
+split_data<- strain_recovery_data_M[split_rows, ]
+test_data2<- strain_recovery_data_M[-split_rows, ]
+
+bd <- xgb.DMatrix(data.matrix(train_data),
+                          label = split_data$Recovery_Score) 
+
+td <- xgb.DMatrix(data.matrix(test_data),
+                          label = test_data2$Recovery_Score) 
+set.seed(1)
+bml <- xgb.train(data = bd,
+                         nrounds = 100, 
+                         params = list(learning_rate = 0.1, 
+                                       objective = "reg:squarederror"))
+predictions <- predict(bml, newdata = td)
+preds<-as.data.frame(predictions)
+test<- test_data2|>
+  dplyr::select(Recovery_Score) |>
+  cbind(preds) 
+filtered_preds <- test|>
+  mutate(diff = abs(Recovery_Score - predictions)) |>
+  summarize(mean(diff))
+
+print(filtered_preds)
+```
+
+
+Boosted model mean difference between recovery score and prediction for Female Squash Player data
+```{r}
+imputed_subset<- strain_recovery_data_W |>
+  dplyr::select(-Recovery_Score)
+set.seed(1)
+training_rows <- sample(1:nrow(imputed_subset),
+                        size = nrow(imputed_subset)/2)
+train_data<- imputed_subset[training_rows, ]
+test_data<- imputed_subset[-training_rows, ]
+
+set.seed(1)
+split_rows <- sample(1:nrow(strain_recovery_data_W),
+                        size = nrow(strain_recovery_data_W)/2)
+split_data<- strain_recovery_data_W[split_rows, ]
+test_data2<- strain_recovery_data_W[-split_rows, ]
+
+bd <- xgb.DMatrix(data.matrix(train_data),
+                          label = split_data$Recovery_Score) 
+
+td <- xgb.DMatrix(data.matrix(test_data),
+                          label = test_data2$Recovery_Score) 
+set.seed(1)
+bml <- xgb.train(data = bd,
+                         nrounds = 100, 
+                         params = list(learning_rate = 0.1, 
+                                       objective = "reg:squarederror"))
+predictions <- predict(bml, newdata = td)
+preds<-as.data.frame(predictions)
+test<- test_data2|>
+  dplyr::select(Recovery_Score) |>
+  cbind(preds) 
+filtered_preds <- test|>
+  mutate(diff = abs(Recovery_Score - predictions)) |>
+  summarize(mean(diff))
+
+print(filtered_preds)
+
+```
+  
+
+For the Boosted trees model, the mean difference between predicted vs. actual recovery scores was 16.3 for the male players' data set and 18.2 for the female players' data set. We can't directly compare this to the other models, because they report RMSE, which is often larger than the mean difference. However, boosted trees are a great model for capturing and visualizing subtle patterns, so we will use them to do so.
+  
+```{r, results='hide', message=FALSE, warning=FALSE}
+set.seed(1)
+shap_strain_recovery_subset_M <- strain_recovery_data_M %>%
+  dplyr::select(-Recovery_Score)
+
+boost_data1 <- xgb.DMatrix(data.matrix(shap_strain_recovery_subset_M),
+                          label = strain_recovery_data_M$Recovery_Score)
+
+boost_model1 <- xgb.train(data = boost_data1,
+                         nrounds = 65,
+                         params = list(learning_rate = 0.1,
+                                       objective = "reg:squarederror"))
+
+shap_values1 <- shapviz(boost_model1, X_pred = data.matrix(shap_strain_recovery_subset_M),
+                        x = shap_strain_recovery_subset_M)
+
+set.seed(1)
+shap_strain_recovery_subset_W <- strain_recovery_data_W %>%
+  dplyr::select(-Recovery_Score)
+
+boost_data2 <- xgb.DMatrix(data.matrix(shap_strain_recovery_subset_W),
+                          label = strain_recovery_data_W$Recovery_Score)
+
+boost_model2 <- xgb.train(data = boost_data2,
+                         nrounds = 65,
+                         params = list(learning_rate = 0.1,
+                                       objective = "reg:squarederror"))
+
+shap_values2 <- shapviz(boost_model2, X_pred = data.matrix(shap_strain_recovery_subset_W),
+                        x = shap_strain_recovery_subset_W)
+```
+
+
+Male Squash player data boosted model beeswarm graph:
+```{r}
+sv_importance(shap_values1, kind = "beeswarm")
+```
+
+
+Female Squash player data boosted model beeswarm graph:
+```{r}
+sv_importance(shap_values2, kind = "beeswarm")
+```
+
+  
+  This first shap value graphs is looking at how much each of the workout statistics contribute to recovery scores. Two things matter in this graph: the range of the SHAP values for each variable, and the distribution of the feature importance. If the range is big, we can say that this variable had a pretty important contribution to the model. In addition, if high feature values tend to lead to increased SHAP values while low feature values do the opposite, there is probably a pretty clear directional relationship for this variable and recovery score. If there is a spread where both high and low feature values contribute to positive and negative SHAP values, there is a more complex and nonlinear relationship. We can see that, overall, the source (person whose data it was) is important because it has the biggest range. Max HR, activity stain, start time, and end time of workout seem to have directional relationships with recovery score, but this slightly varies for men and women.
+  
+  
+  These results are interesting, but these results are a vacuum. From this graph, it looks like workout data is super important for recovery, for from our Random Forest and GAM splines, we know that isn't necessarily true. Next, we have a graph for all variables; if they look the same, then workout data is super important but that might not be the case. 
+  
+  
+```{r, results='hide', message=FALSE, warning=FALSE}
+set.seed(1)
+shap_strain_recovery_subset2M <- full_data_M %>%
+  dplyr::select(-Recovery_Score, -Activity.name)
+
+boost_data3 <- xgb.DMatrix(data.matrix(shap_strain_recovery_subset2M),
+                          label = full_data_M$Recovery_Score)
+
+boost_model3 <- xgb.train(data = boost_data3,
+                         nrounds = 65,
+                         params = list(learning_rate = 0.1,
+                                       objective = "reg:squarederror"))
+
+shap_values3 <- shapviz(boost_model3, X_pred = data.matrix(shap_strain_recovery_subset2M),
+                        x = shap_strain_recovery_subset2M)
+
+set.seed(1)
+shap_strain_recovery_subset2W <- full_data_W %>%
+  dplyr::select(-Recovery_Score, -Activity.name)
+
+boost_data4 <- xgb.DMatrix(data.matrix(shap_strain_recovery_subset2W),
+                          label = full_data_W$Recovery_Score)
+
+boost_model4 <- xgb.train(data = boost_data4,
+                         nrounds = 65,
+                         params = list(learning_rate = 0.1,
+                                       objective = "reg:squarederror"))
+
+shap_values4 <- shapviz(boost_model4, X_pred = data.matrix(shap_strain_recovery_subset2W),
+                        x = shap_strain_recovery_subset2W)
+```
+
+Male Squash player data boosted model beeswarm graph:
+```{r}
+sv_importance(shap_values4, kind = "beeswarm")
+```
+
+Female Squash player data boosted model beeswarm graph:
+```{r}
+sv_importance(shap_values3, kind = "beeswarm")
+```
+  
+  
+  Looking at this graph, heart rate variability, source, and sleep performance are important for making predictions. All of the other variables are sleep related, hinting at there being a stronger relationship between sleep and recovery compared to workouts and recovery. However, there is another relationship that could be true: there could be a strong relationship between workouts and sleep, so we can look at that too.
+  
+  
+```{r}
+strain_sleep_data_M <- full_data_M %>%
+  dplyr::select(Source,
+                Duration,
+                Activity.Strain,
+                Calories_Burned_Workout,
+                Max_HR_Workout,
+                Avg_HR_Workout,
+                HR_Zone_1,
+                HR_Zone_2,
+                HR_Zone_3,
+                HR_Zone_4,
+                HR_Zone_5,
+                Start_time_workout,
+                End_time_workout,
+                Sleep_Performance)
+
+set.seed(1)
+gs_squash_2M <- train(Sleep_Performance ~.,
+                    data = strain_sleep_data_M,
+                    method = "gamSpline",
+                    importance = "impurity",
+                  trControl = trainControl(method = "cv", number = 5),
+                   tuneGrid = expand.grid(df = c(1, 2, 3, 4, 5)))
+
+
+strain_sleep_data_W <- full_data_W %>%
+  dplyr::select( Source,
+                Duration,
+                Activity.Strain,
+                Calories_Burned_Workout,
+                Max_HR_Workout,
+                Avg_HR_Workout,
+                HR_Zone_1,
+                HR_Zone_2,
+                HR_Zone_3,
+                HR_Zone_4,
+                HR_Zone_5,
+                Start_time_workout,
+                End_time_workout,
+                Sleep_Performance)
+
+set.seed(1)
+gs_squash_2W <- train(Sleep_Performance ~.,
+                    data = strain_sleep_data_W,
+                    method = "gamSpline",
+                    importance = "impurity",
+                  trControl = trainControl(method = "cv", number = 5),
+                   tuneGrid = expand.grid(df = c(1, 2, 3, 4, 5)))
+```
+
+
+GAM with splines results and top ten variables with their importance for Male Squash Player data
+```{r}
+print(gs_squash_2M)
+gs2M <- varImp(gs_squash_2M) 
+gsimp2M<- as.data.frame(gs2M$importance) |>
+  arrange(-Overall) |>
+  head(10)
+print(gsimp2M)
+```
+
+GAM with splines results and top ten variables with their importance for Female Squash Player data
+```{r}
+print(gs_squash_2W)
+gs2W <- varImp(gs_squash_2W) 
+gsimp2W<- as.data.frame(gs2W$importance) |>
+  arrange(-Overall) |>
+  head(10)
+print(gsimp2W)
+```
+
+  We used GAM with splines for this model because it performed much better than random forests, meaning that these variables are probably additive rather than complex and interactive with each other. Looking at this model, our RMSE decreased (error variance is lower) and the r^2 increased (more of the result is explained by the data) for both men and women. This now leads us to believe that strain and workouts have a much higher impact on sleep compared to recovery, though it is still not super high. This model is using our lagged data, so we can use our aggregated workout data to see what the results show and see if it is different.
+  
+  Examining variables, the source (the individual players) of the data mattered a lot. But, if we go beyond the source, the end time of the workout is an important variable for both men and women. The end time of the workout appeared in our first model predicting recovery score, indicating that the time of your workout could be important in your recovery process.
+  
+Now let's look at sleep performance with an xg boost model to see how it performs as well as to visualize the variable importance for male and female squash players.
+
+
+
+Boosted model mean difference between sleep performance score and prediction for Male Squash Player data
+```{r}
+imputed_subset<- strain_sleep_data_M |>
+  dplyr::select(-Sleep_Performance)
+set.seed(1)
+training_rows <- sample(1:nrow(imputed_subset),
+                        size = nrow(imputed_subset)/2)
+train_data<- imputed_subset[training_rows, ]
+test_data<- imputed_subset[-training_rows, ]
+
+set.seed(1)
+split_rows <- sample(1:nrow(strain_sleep_data_M),
+                        size = nrow(strain_sleep_data_M)/2)
+split_data<- strain_sleep_data_M[split_rows, ]
+test_data2<- strain_sleep_data_M[-split_rows, ]
+
+bd <- xgb.DMatrix(data.matrix(train_data),
+                          label = split_data$Sleep_Performance) 
+
+td <- xgb.DMatrix(data.matrix(test_data),
+                          label = test_data2$Sleep_Performance) 
+set.seed(1)
+bml <- xgb.train(data = bd,
+                         nrounds = 100, 
+                         params = list(learning_rate = 0.1, 
+                                       objective = "reg:squarederror"))
+predictions <- predict(bml, newdata = td)
+preds<-as.data.frame(predictions)
+test<- test_data2|>
+  dplyr::select(Sleep_Performance) |>
+  cbind(preds) 
+filtered_preds <- test|>
+  mutate(diff = abs(Sleep_Performance - predictions)) |>
+  summarize(mean(diff))
+
+print(filtered_preds)
+```
+
+Boosted model mean difference between sleep performance score and prediction for Female Squash Player data
+```{r}
+imputed_subset<- strain_sleep_data_W |>
+  dplyr::select(-Sleep_Performance)
+set.seed(1)
+training_rows <- sample(1:nrow(imputed_subset),
+                        size = nrow(imputed_subset)/2)
+train_data<- imputed_subset[training_rows, ]
+test_data<- imputed_subset[-training_rows, ]
+
+set.seed(1)
+split_rows <- sample(1:nrow(strain_sleep_data_W),
+                        size = nrow(strain_sleep_data_W)/2)
+split_data<- strain_sleep_data_W[split_rows, ]
+test_data2<- strain_sleep_data_W[-split_rows, ]
+
+bd <- xgb.DMatrix(data.matrix(train_data),
+                          label = split_data$Sleep_Performance) 
+
+td <- xgb.DMatrix(data.matrix(test_data),
+                          label = test_data2$Sleep_Performance) 
+set.seed(1)
+bml <- xgb.train(data = bd,
+                         nrounds = 100, 
+                         params = list(learning_rate = 0.1, 
+                                       objective = "reg:squarederror"))
+predictions <- predict(bml, newdata = td)
+preds<-as.data.frame(predictions)
+test<- test_data2|>
+  dplyr::select(Sleep_Performance) |>
+  cbind(preds) 
+filtered_preds <- test|>
+  mutate(diff = abs(Sleep_Performance - predictions)) |>
+  summarize(mean(diff))
+
+print(filtered_preds)
+```
+
+
+For both cases, Boosted trees had a low mean difference (lower than for recovery scores). Now that we know Boosted trees works relatively well, we can now examine the variable importance with a SHAP beeswarm graph.
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+set.seed(1)
+shap_strain_sleep_subset_M <- strain_sleep_data_M %>%
+  dplyr::select(-Sleep_Performance)
+
+boost_data5 <- xgb.DMatrix(data.matrix(shap_strain_sleep_subset_M),
+                          label = strain_sleep_data_M$Sleep_Performance)
+
+boost_model5 <- xgb.train(data = boost_data5,
+                         nrounds = 65,
+                         params = list(learning_rate = 0.1,
+                                       objective = "reg:squarederror"))
+
+shap_values5 <- shapviz(boost_model5, X_pred = data.matrix(shap_strain_sleep_subset_M),
+                        x = shap_strain_sleep_subset_M)
+
+set.seed(1)
+shap_strain_sleep_subset_W <- strain_sleep_data_W %>%
+  dplyr::select(-Sleep_Performance)
+
+boost_data6 <- xgb.DMatrix(data.matrix(shap_strain_sleep_subset_W),
+                          label = strain_sleep_data_W$Sleep_Performance)
+
+boost_model6 <- xgb.train(data = boost_data6,
+                         nrounds = 65,
+                         params = list(learning_rate = 0.1,
+                                       objective = "reg:squarederror"))
+
+shap_values6 <- shapviz(boost_model6, X_pred = data.matrix(shap_strain_sleep_subset_W),
+                        x = shap_strain_sleep_subset_W)
+
+```
+
+Male Squash player data boosted model beeswarm graph:
+```{r}
+sv_importance(shap_values5, kind = "beeswarm")
+```
+
+Female Squash player data boosted model beeswarm graph:
+```{r}
+sv_importance(shap_values6, kind = "beeswarm")
+```
+
+
+  Now, we are seeing that things like strain and HR zones playing an important role in the sleep score compared to recovery score. If we look at activity strain for the male player data, the lower strain you have for your squash workout, the more negative your SHAP value is. This is particularly interesting because it is indicating that if you have a less intensive workout, your sleep performance could potentially decrease. Studies have shown that increased physical activity could increase sleep quality (Alnawwar et al., 2023), which aligns with out results. This again, however, does not tell us too much, though, in comparison to our entire data set, so we can make one with all the variables to see if any appear in both graphs.
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+set.seed(1)
+shap_strain_sleep_subset2M <- full_data_M %>%
+  dplyr::select(-Sleep_Performance, -Activity.name, -date)
+
+boost_data7 <- xgb.DMatrix(data.matrix(shap_strain_sleep_subset2M),
+                          label = full_data_M$Sleep_Performance)
+
+boost_model7 <- xgb.train(data = boost_data7,
+                         nrounds = 65,
+                         params = list(learning_rate = 0.1,
+                                       objective = "reg:squarederror"))
+
+shap_values7 <- shapviz(boost_model7, X_pred = data.matrix(shap_strain_sleep_subset2M),
+                        x = shap_strain_sleep_subset2M)
+
+set.seed(1)
+shap_strain_sleep_subset2W <- full_data_W %>%
+  dplyr::select(-Sleep_Performance, -Activity.name, -date)
+
+boost_data8 <- xgb.DMatrix(data.matrix(shap_strain_sleep_subset2W),
+                          label = full_data_W$Sleep_Performance)
+
+boost_model8 <- xgb.train(data = boost_data8,
+                         nrounds = 65,
+                         params = list(learning_rate = 0.1,
+                                       objective = "reg:squarederror"))
+
+shap_values8 <- shapviz(boost_model8, X_pred = data.matrix(shap_strain_sleep_subset2W),
+                        x = shap_strain_sleep_subset2W)
+
+
+```
+
+Male Squash player data boosted model beeswarm graph:
+```{r}
+sv_importance(shap_values7, kind = "beeswarm")
+```
+
+Female Squash player data boosted model beeswarm graph:
+```{r}
+sv_importance(shap_values8, kind = "beeswarm")
+```
+  
+  This graph, again, displays that many sleep variables contribute to sleep performance, especially how much you sleep and how much sleep WHOOP calculates is needed for that night. What is interesting, though, is that a couple of workout variables appear on the beeswarm graph, specifically HR Zone 4 for Male players, and Max HR for workout, duration of workout, and activity strain. 
+  
+  Through making this graph and the total recovery shap graph, it is clear to see one thing: workout stats, though they have a little bit of a higher importance for sleep, do not actually play a large role in either.
+  
+  
+  Further, we will see just how well sleep variables predict recovery:
+```{r}
+colnames(full_data_M)[17] <- c("Resting_HR")
+colnames(full_data_M)[18] <- c("HRV")
+colnames(full_data_M)[19] <- c("Skin_Temp")
+colnames(full_data_M)[20] <- c("Blood_Oxygen")
+colnames(full_data_M)[21] <- c("Day_Strain")
+colnames(full_data_M)[22] <- c("Day_Cals_Burned")
+colnames(full_data_M)[23] <- c("Day_Max_HR")
+colnames(full_data_M)[24] <- c("Day_AVG_HR")
+colnames(full_data_M)[26] <- c("Respitory_Rate")
+colnames(full_data_M)[27] <- c("Sleep_Duration")
+colnames(full_data_M)[28] <- c("Time_In_Bed")
+colnames(full_data_M)[29] <- c("Light_Sleep_Time")
+colnames(full_data_M)[30] <- c("Deep_SWS_Sleep_Time")
+colnames(full_data_M)[31] <- c("REM_Duration")
+colnames(full_data_M)[32] <- c("Awake_Duration")
+colnames(full_data_M)[33] <- c("Sleep_Needed")
+colnames(full_data_M)[34] <- c("Sleep_Debt")
+colnames(full_data_M)[35] <- c("Sleep_Efficiency")
+colnames(full_data_M)[36] <- c("Sleep_Consistency")
+colnames(full_data_M)[37] <- c("Start_Time_Sleep")
+colnames(full_data_M)[38] <- c("End_Time_Sleep")
+
+recovery_sleep_data_M <- full_data_M %>%
+  dplyr::select(Source,
+                Resting_HR, 
+                HRV,
+                Skin_Temp,
+                Blood_Oxygen,
+                Day_Strain,
+                Day_Cals_Burned,
+                Day_Max_HR,
+                Day_AVG_HR,
+                Respitory_Rate,
+                Sleep_Duration,
+                Time_In_Bed,
+                Light_Sleep_Time,
+                Deep_SWS_Sleep_Time,
+                REM_Duration,
+                Awake_Duration,
+                Sleep_Needed,
+                Sleep_Debt,
+                Sleep_Efficiency,
+                Sleep_Consistency,
+                Start_Time_Sleep,
+                End_Time_Sleep,
+                Recovery_Score,
+                Sleep_Performance)
+
+
+colnames(full_data_W)[17] <- c("Resting_HR")
+colnames(full_data_W)[18] <- c("HRV")
+colnames(full_data_W)[19] <- c("Skin_Temp")
+colnames(full_data_W)[20] <- c("Blood_Oxygen")
+colnames(full_data_W)[21] <- c("Day_Strain")
+colnames(full_data_W)[22] <- c("Day_Cals_Burned")
+colnames(full_data_W)[23] <- c("Day_Max_HR")
+colnames(full_data_W)[24] <- c("Day_AVG_HR")
+colnames(full_data_W)[26] <- c("Respitory_Rate")
+colnames(full_data_W)[27] <- c("Sleep_Duration")
+colnames(full_data_W)[28] <- c("Time_In_Bed")
+colnames(full_data_W)[29] <- c("Light_Sleep_Time")
+colnames(full_data_W)[30] <- c("Deep_SWS_Sleep_Time")
+colnames(full_data_W)[31] <- c("REM_Duration")
+colnames(full_data_W)[32] <- c("Awake_Duration")
+colnames(full_data_W)[33] <- c("Sleep_Needed")
+colnames(full_data_W)[34] <- c("Sleep_Debt")
+colnames(full_data_W)[35] <- c("Sleep_Efficiency")
+colnames(full_data_W)[36] <- c("Sleep_Consistency")
+colnames(full_data_W)[37] <- c("Start_Time_Sleep")
+colnames(full_data_W)[38] <- c("End_Time_Sleep")
+
+recovery_sleep_data_W <- full_data_W %>%
+  dplyr::select(Source,
+                Resting_HR, 
+                HRV,
+                Skin_Temp,
+                Blood_Oxygen,
+                Day_Strain,
+                Day_Cals_Burned,
+                Day_Max_HR,
+                Day_AVG_HR,
+                Respitory_Rate,
+                Sleep_Duration,
+                Time_In_Bed,
+                Light_Sleep_Time,
+                Deep_SWS_Sleep_Time,
+                REM_Duration,
+                Awake_Duration,
+                Sleep_Needed,
+                Sleep_Debt,
+                Sleep_Efficiency,
+                Sleep_Consistency,
+                Start_Time_Sleep,
+                End_Time_Sleep,
+                Recovery_Score,
+                Sleep_Performance)
+
+
+set.seed(1)
+rf_squash3M <- train(Recovery_Score ~.,
+                    data = recovery_sleep_data_M,
+                    method = "ranger",
+                    importance = "impurity")
+
+
+rf_squash3W <- train(Recovery_Score ~.,
+                    data = recovery_sleep_data_W,
+                    method = "ranger",
+                    importance = "impurity")
+```
+
+
+Random Forest results and variable importance for Male Squash Player data
+```{r}
+rf_squash3M
+rf2M <- varImp(rf_squash3M) 
+rfimp2M<- as.data.frame(rf2M$importance) |>
+  arrange(-Overall) |>
+  head(10)
+print(rfimp2M)
+```
+
+Random Forest results and variable importance for Female Squash Player data
+```{r}
+rf_squash3W
+rf2W <- varImp(rf_squash3W) 
+rfimp2W<- as.data.frame(rf2W$importance) |>
+  arrange(-Overall) |>
+  head(10)
+print(rfimp2W)
+```
+
+
+  This model gives us the highest R^2 and lowest RMSE. In non-technical terms, this model shows that most of the recovery score comes from sleep performance. Now we can connect the workout to recovery to this: if 86% and 82% of the result for recovery score for male and female squash players is coming from sleep data, respectively, that means only 14% and 18% is coming from something else, which we can say was largely the workout data, as it is the data in the data set not used in this model. The R^2 for the workout to recovery model was only 13% for the male squash player data set, but now knowing that only ~14% of the score can come from that data, 13% seems like a much better R^2. This is not a definite truth, but logically it makes sense and there is a lot of truth in it. For the female squash player data set, only having an R^2 of around 3% still is not ideal. But, we increased the R^2 by looking at sleep performance, which is an important variable for the random forests generated above. This shows that while sleep performance is a strong predictor of recovery, the smaller contribution from the workout data suggests there may be other underlying factors influencing recovery for female athletes that are not captured by either models. Earlier we mentioned how we separated the data by gender. These results align with our decision in that women have menstrual cycles, hormonal changes, different sleep cycles than men, and different responses to intense training that probably is not captured in this Whoop data. To add to this, there were less data for the female athletes, which impacted the ability for the models to catch patterns that could be found with more data.
+  
+  Looking at the variable importance, the leading variable is Heart rate variability (HRV), which is a pretty good statistic for how good the quality of ones sleep is. Heart rate variability measures the heart rate fluctuation from heartbeat to heartbeat, which can give insight into the balance between parasympathetic and sympathetic nervous system activity. More activity from the parasympathetic nervous system comes from spending more time in restorative sleep phases, like REM and deep sleep, and can can lead to an increased HRV. It is cool to see that this variable is more important than even sleep performance and sleep duration when looking at how sleep impacts recovery!
+  
+  
+```{r, results='hide', message=FALSE, warning=FALSE}
+shap_sleep_recovery_subset2M <- full_data_M %>%
+  dplyr::select(-Recovery_Score, -date)
+
+boost_data10 <- xgb.DMatrix(data.matrix(shap_sleep_recovery_subset2M),
+                          label = full_data_M$Recovery_Score)
+
+boost_model10 <- xgb.train(data = boost_data10,
+                         nrounds = 65,
+                         params = list(learning_rate = 0.1,
+                                       objective = "reg:squarederror"))
+
+shap_values10 <- shapviz(boost_model10, X_pred = data.matrix(shap_sleep_recovery_subset2M),
+                        x = shap_sleep_recovery_subset2M)
+
+shap_sleep_recovery_subset2W <- full_data_W %>%
+  dplyr::select(-Recovery_Score, -date)
+
+boost_data10 <- xgb.DMatrix(data.matrix(shap_sleep_recovery_subset2W),
+                          label = full_data_W$Recovery_Score)
+
+boost_model10 <- xgb.train(data = boost_data10,
+                         nrounds = 65,
+                         params = list(learning_rate = 0.1,
+                                       objective = "reg:squarederror"))
+
+shap_values11 <- shapviz(boost_model10, X_pred = data.matrix(shap_sleep_recovery_subset2W),
+                        x = shap_sleep_recovery_subset2W)
+```
+
+Male Squash player data boosted model beeswarm graph:
+```{r}
+sv_importance(shap_values10, kind = "beeswarm") 
+```
+
+Female Squash player data boosted model beeswarm graph:
+```{r}
+sv_importance(shap_values11, kind = "beeswarm") 
+```
+
+  After this analysis, we can conclude that sleep has the greatest impact on recovery and while workouts do as well, they have a much smaller impact compared to sleep. When zooming in on workout data, recurring patterns showed up. We found that workout start time and end time mattered for your sleep performance and recovery. Working out later was related to higher sleep performance and recovery scores. This could be because early morning workouts could interfere with how much sleep you get, negatively impacting your sleep performance and recovery. In addition, studies suggest that midday and late afternoon workouts are optimal for athletic performance (Mirizio et al., 2020). One study even found that as long as vigorous exercise is avoided less than one hour before sleep, working out in the evening actually helps people fall asleep and spend more time in deep sleep, further supporting the results we saw (Stutz et al., 2019). If later and more intense workouts help people spend more time in deep sleep, HRV could also increase, which is the most important variable in predicting recovery. We also saw that moderate and heavy activity strain lead to higher sleep performance while lighter activity strain lowered sleep performance. Some beeswarm graphs showed less time in the lower heart rate zones trended towards negative SHAP values.
+  
+  Moreover, from building statistical models with Random Forests, GAM with splines, and Boosted trees, a pattern emerges for how the intensity of a workout could positively impact sleep performance and recovery. Even with differences between male and female squash player data, the results lead us to believe that if squash players want to try to maximize their squash workout and sleep performance and recovery, they should prioritize having an intense, midday/early evening workout followed by a sufficient amount of sleep. While heart rate variability isn't something you can necessarily "control", things like maximizing the amount you sleep you can control, and could positively impact your recovery. By applying these insights, squash athletes can make data-driven decisions to improve their training regimens, recovery strategies, and overall performance.
+  
+**Works cited**
+
+
+  Alnawwar, M. A., Alraddadi, M. I., Algethmi, R. A., Salem, G. A., Salem, M. A., Alharbi, A. A., Alnawwar, M. A., Alraddadi, M. I., Algethmi, R. A., Salem, G. A., Salem, M. A., & Alharbi, A. A. (2023). The Effect of Physical Activity on Sleep Quality and Sleep Disorder: A Systematic Review. Cureus, 15. https://doi.org/10.7759/cureus.43595
+  
+  An Introduction to Statistical Learning. (n.d.). An Introduction to Statistical Learning. Retrieved December 16, 2024, from https://www.statlearning.com
+  
+  Ansdell, P., Thomas, K., Hicks, K. M., Hunter, S. K., Howatson, G., & Goodall, S. (2020). Physiological sex differences affect the integrative response to exercise: Acute and chronic implications. Experimental Physiology, 105(12), 2007–2021. https://doi.org/10.1113/EP088548
+  
+  ChatGPT. (n.d.). Retrieved December 16, 2024, from https://chatgpt.com
+  
+  Does exercising at night affect sleep? (2019, April 1). Harvard Health. https://www.health.harvard.edu/staying-healthy/does-exercising-at-night-affect-sleep
+  
+  Exercising for Better Sleep. (2024, June 20). https://www.hopkinsmedicine.org/health/wellness-and-prevention/exercising-for-better-sleep
+  
+  How to interpret and report nonlinear effects from Generalized Additive Models. (n.d.). GAMbler. Retrieved December 16, 2024, from https://ecogambler.netlify.app/blog/interpreting-gams/
+  
+  Jackson, D. S. (n.d.). Chapter 9 Splines | Machine Learning. Retrieved December 16, 2024, from https://bookdown.org/ssjackson300/Machine-Learning-Lecture-Notes/splines.html
+  
+  Kuhn, M. (n.d.). 7 train Models By Tag | The caret Package. Retrieved December 16, 2024, from https://topepo.github.io/caret/train-models-by-tag.html#Generalized_Additive_Model
+  
+  Mirizio, G. G., Nunes, R. S. M., Vargas, D. A., Foster, C., & Vieira, E. (2020). Time-of-Day Effects on Short-Duration Maximal Exercise Performance. Scientific Reports, 10(1), 9485. https://doi.org/10.1038/s41598-020-66342-w
+  
+  Stutz, J., Eiholzer, R., & Spengler, C. M. (2019). Effects of Evening Exercise on Sleep in Healthy Participants: A Systematic Review and Meta-Analysis. Sports Medicine (Auckland, N.Z.), 49(2), 269–287. https://doi.org/10.1007/s40279-018-1015-0
+
+
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
